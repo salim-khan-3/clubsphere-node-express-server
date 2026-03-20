@@ -2,39 +2,38 @@ import Stripe from "stripe";
 import { getDB } from "../config/db.js";
 import { ObjectId } from "mongodb";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-
-// ─── Create Payment Intent (Membership) ────────────────────────────────────────
+// ─── Create Payment Intent (Membership) ──────────────────────────────────────
 export const createMembershipPaymentIntent = async (req, res) => {
   const db = getDB();
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
   try {
     const { clubId } = req.body;
+    console.log("💳 Membership intent:", { clubId, user: req.user?.email });
     const club = await db.collection("clubs").findOne({ _id: new ObjectId(clubId) });
 
     if (!club) return res.status(404).json({ success: false, message: "Club not found" });
     if (club.membershipFee <= 0) return res.status(400).json({ success: false, message: "This club is free to join" });
 
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(club.membershipFee * 100), // Stripe uses cents
+      amount: Math.round(club.membershipFee * 100),
       currency: "usd",
-      metadata: {
-        clubId: clubId,
-        userEmail: req.user.email,
-        type: "membership",
-      },
+      metadata: { clubId, userEmail: req.user.email, type: "membership" },
     });
 
     res.json({ success: true, clientSecret: paymentIntent.client_secret, amount: club.membershipFee });
   } catch (error) {
+    console.error("❌ Membership payment error:", error.message);
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// ─── Create Payment Intent (Event) ────────────────────────────────────────────
+// ─── Create Payment Intent (Event) ───────────────────────────────────────────
 export const createEventPaymentIntent = async (req, res) => {
   const db = getDB();
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
   try {
     const { eventId } = req.body;
+    console.log("💳 Event intent:", { eventId, user: req.user?.email });
     const event = await db.collection("events").findOne({ _id: new ObjectId(eventId) });
 
     if (!event) return res.status(404).json({ success: false, message: "Event not found" });
@@ -43,49 +42,43 @@ export const createEventPaymentIntent = async (req, res) => {
     const paymentIntent = await stripe.paymentIntents.create({
       amount: Math.round(event.eventFee * 100),
       currency: "usd",
-      metadata: {
-        eventId: eventId,
-        clubId: event.clubId,
-        userEmail: req.user.email,
-        type: "event",
-      },
+      metadata: { eventId, clubId: event.clubId, userEmail: req.user.email, type: "event" },
     });
 
     res.json({ success: true, clientSecret: paymentIntent.client_secret, amount: event.eventFee });
   } catch (error) {
+    console.error("❌ Event payment error:", error.message);
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// ─── Confirm Membership After Payment ─────────────────────────────────────────
+// ─── Confirm Membership After Payment ────────────────────────────────────────
 export const confirmMembershipPayment = async (req, res) => {
   const db = getDB();
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
   try {
     const { clubId, paymentIntentId } = req.body;
 
-    // Verify payment with Stripe
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
     if (paymentIntent.status !== "succeeded") {
       return res.status(400).json({ success: false, message: "Payment not completed" });
     }
 
-    // Create membership record
-    const membership = {
-      userEmail: req.user.email,
-      clubId,
-      status: "active",
-      paymentId: paymentIntentId,
-      joinedAt: new Date(),
-      expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000), // 1 year
-    };
-
     await db.collection("memberships").updateOne(
       { userEmail: req.user.email, clubId },
-      { $set: membership },
+      {
+        $set: {
+          userEmail: req.user.email,
+          clubId,
+          status: "active",
+          paymentId: paymentIntentId,
+          joinedAt: new Date(),
+          expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+        },
+      },
       { upsert: true }
     );
 
-    // Save payment record
     const club = await db.collection("clubs").findOne({ _id: new ObjectId(clubId) });
     await db.collection("payments").insertOne({
       userEmail: req.user.email,
@@ -100,11 +93,12 @@ export const confirmMembershipPayment = async (req, res) => {
 
     res.json({ success: true, message: "Membership activated!" });
   } catch (error) {
+    console.error("❌ Confirm payment error:", error.message);
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// ─── Get All Payments (Admin) ──────────────────────────────────────────────────
+// ─── Get All Payments (Admin) ─────────────────────────────────────────────────
 export const getAllPayments = async (req, res) => {
   const db = getDB();
   try {
@@ -122,7 +116,9 @@ export const getAllPayments = async (req, res) => {
     ]).toArray();
 
     res.json({
-      success: true, payments, total,
+      success: true,
+      payments,
+      total,
       totalRevenue: totalRevenue[0]?.total || 0,
       totalPages: Math.ceil(total / parseInt(limit)),
     });
@@ -131,7 +127,7 @@ export const getAllPayments = async (req, res) => {
   }
 };
 
-// ─── Get Member's Payment History ─────────────────────────────────────────────
+// ─── Get Member's Payment History ────────────────────────────────────────────
 export const getMemberPayments = async (req, res) => {
   const db = getDB();
   try {
